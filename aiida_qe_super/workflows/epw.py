@@ -98,12 +98,17 @@ from aiida_quantumespresso.workflows.protocols.utils import ProtocolMixin
 from aiida_quantumespresso.calculations.epw import EpwCalculation
 from aiida_quantumespresso.calculations.functions.create_kpoints_from_distance import create_kpoints_from_distance
 
-from aiida_wannier90_workflows.workflows import Wannier90BandsWorkChain
+from aiida_wannier90_workflows.workflows import Wannier90BandsWorkChain, Wannier90OptimizeWorkChain
+from aiida_wannier90_workflows.workflows.bands import validate_inputs as validate_inputs_bands
 from aiida_wannier90_workflows.utils.workflows.builder.setter import set_kpoints
-
+from aiida_wannier90_workflows.common.types import WannierProjectionType
 
 class EpwWorkChain(ProtocolMixin, WorkChain):
-    """Main work chain to start calculating properties using EPW."""
+    """Main work chain to start calculating properties using EPW.
+
+    Has support for both the selected columns of the density matrix (SCDM) and
+    (projectability-disentangled Wannier function) PDWF projection types.
+    """
 
     @classmethod
     def define(cls, spec):
@@ -118,13 +123,14 @@ class EpwWorkChain(ProtocolMixin, WorkChain):
         spec.input('w90_chk_to_ukk_script', valid_type=(orm.RemoteData, orm.SinglefileData))
 
         spec.expose_inputs(
-            Wannier90BandsWorkChain, namespace='w90_bands', exclude=(
-                'structure'
+            Wannier90OptimizeWorkChain, namespace='w90_bands', exclude=(
+                'structure', 'clean_workdir',
             ),
             namespace_options={
-                'help': 'Inputs for the `Wannier90BandsWorkChain`.'
+                'help': 'Inputs for the `Wannier90OptimizeWorkChain/Wannier90BandsWorkChain`.'
             }
         )
+        spec.inputs['w90_bands'].validator = validate_inputs_bands
         spec.expose_inputs(
             PhBaseWorkChain, namespace='ph_base', exclude=(
                 'clean_workdir', 'ph.parent_folder', 'ph.qpoints'
@@ -169,7 +175,10 @@ class EpwWorkChain(ProtocolMixin, WorkChain):
         return files(protocols) / 'epw.yaml'
 
     @classmethod
-    def get_builder_from_protocol(cls, codes, structure, protocol=None, overrides=None, **kwargs):
+    def get_builder_from_protocol(cls, codes, structure, protocol=None, overrides=None,
+                                  wannier_projection_type=WannierProjectionType.ATOMIC_PROJECTORS_QE,
+                                  reference_bands=None, bands_kpoints=None,
+                                  **kwargs):
         """Return a builder prepopulated with inputs selected according to the chosen protocol.
 
         :param structure: the ``StructureData`` instance to use.
@@ -183,13 +192,32 @@ class EpwWorkChain(ProtocolMixin, WorkChain):
 
         w90_bands_inputs = inputs.get('w90_bands', {})
         pseudo_family = w90_bands_inputs.pop('pseudo_family', None)
-        w90_bands = Wannier90BandsWorkChain.get_builder_from_protocol(
-            structure=structure,
-            codes=codes,
-            run_open_grid=False,
-            pseudo_family=pseudo_family,
-            overrides=w90_bands_inputs
-        )
+
+        if wannier_projection_type == WannierProjectionType.ATOMIC_PROJECTORS_QE:
+            if reference_bands is None:
+                raise ValueError(f'reference_bands must be specified for {wannier_projection_type}')
+            w90_bands = Wannier90OptimizeWorkChain.get_builder_from_protocol(
+                structure=structure,
+                codes=codes,
+                pseudo_family=pseudo_family,
+                overrides=w90_bands_inputs,
+                reference_bands=reference_bands,
+                bands_kpoints=bands_kpoints,
+            )
+            w90_bands.separate_plotting = False
+            # pop useless inputs, otherwise the builder validation will fail
+            # at validating empty inputs
+            w90_bands.pop("projwfc", None)
+        elif wannier_projection_type == WannierProjectionType.SCDM:
+            w90_bands = Wannier90BandsWorkChain.get_builder_from_protocol(
+                structure=structure,
+                codes=codes,
+                pseudo_family=pseudo_family,
+                overrides=w90_bands_inputs,
+            )
+        else:
+            raise ValueError(f'Unsupported wannier_projection_type: {wannier_projection_type}')
+
         w90_bands.pop('structure', None)
         w90_bands.pop('open_grid', None)
 
@@ -262,21 +290,23 @@ class EpwWorkChain(ProtocolMixin, WorkChain):
 
     def run_wannier90(self):
         """Run the wannier90 workflow."""
+        if 'projwfc' in self.inputs.w90_bands:
+            self.report('Running a Wannier90BandsWorkChain.')
+            w90_class = Wannier90BandsWorkChain
+        else:
+            self.report('Running a Wannier90OptimizeWorkChain.')
+            w90_class = Wannier90OptimizeWorkChain
+
         inputs = AttributeDict(
-            self.exposed_inputs(Wannier90BandsWorkChain, namespace='w90_bands')
+            self.exposed_inputs(Wannier90OptimizeWorkChain, namespace='w90_bands')
         )
         inputs.metadata.call_link_label = 'w90_bands'
         inputs.structure = self.inputs.structure
 
-        # Add the julia script to the append text
-        append_text = inputs.wannier90.wannier90.metadata.options.get('append_text', '')
-        append_text += f'\njulia {self.inputs.w90_chk_to_ukk_script.get_remote_path()} aiida.chk aiida.ukk'
-        inputs.wannier90.wannier90.metadata.options.append_text = append_text
-
-        set_kpoints(inputs, self.ctx.kpoints_nscf, Wannier90BandsWorkChain)
+        set_kpoints(inputs, self.ctx.kpoints_nscf, w90_class)
         inputs['scf']['kpoints'] = self.ctx.kpoints_scf
 
-        workchain_node = self.submit(Wannier90BandsWorkChain, **inputs)
+        workchain_node = self.submit(w90_class, **inputs)
         self.report(f'launching wannier90 work chain {workchain_node.pk}')
 
         return ToContext(workchain_w90_bands=workchain_node)
@@ -329,9 +359,6 @@ class EpwWorkChain(ProtocolMixin, WorkChain):
         inputs.qpoints = self.ctx.qpoints
         inputs.qfpoints = fine_points      
 
-        wannier90_wc =  self.ctx.workchain_w90_bands.base.links.get_outgoing(link_label_filter='wannier90').first().node
-        wannier_ukk_path = Path(wannier90_wc.outputs.remote_folder.get_remote_path(), 'aiida.ukk')
-
         parameters = inputs.parameters.get_dict()
 
         wannier_params = self.ctx.workchain_w90_bands.inputs.wannier90.wannier90.parameters.get_dict()
@@ -342,8 +369,16 @@ class EpwWorkChain(ProtocolMixin, WorkChain):
         parameters['INPUTEPW']['nbndsub'] = wannier_params['num_wann']
         inputs.parameters = orm.Dict(parameters)
 
+        if 'projwfc' in self.inputs.w90_bands:
+            w90_remote_data = self.ctx.workchain_w90_bands.outputs.wannier90__remote_folder
+        else:
+            w90_remote_data = self.ctx.workchain_w90_bands.outputs.wannier90_optimal__remote_folder
+
+        wannier_chk_path = Path(w90_remote_data.get_remote_path(), 'aiida.chk')
+        nscf_xml_path = Path(self.ctx.workchain_w90_bands.outputs.nscf.remote_folder.get_remote_path(), 'out/aiida.xml')
+
         prepend_text = inputs.metadata.options.get('prepend_text', '')
-        prepend_text += f'\ncp {wannier_ukk_path} .\n'
+        prepend_text += f'\n{self.inputs.w90_chk_to_ukk_script.get_remote_path()} {wannier_chk_path} {nscf_xml_path} aiida.ukk'
         inputs.metadata.options.prepend_text = prepend_text
 
         inputs.metadata.call_link_label = 'epw'
