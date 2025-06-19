@@ -49,17 +49,17 @@ def validate_inputs(inputs, ctx=None):
 
     # Rule 2: If any of the `nscf/ph/chk` trio are provided, ALL must be provided.
     # `any()` is True if at least one is True. `all()` is True only if all are True.
-    if any([
-        has_parent_folder_nscf, 
-        has_parent_folder_ph, 
-        has_parent_folder_chk
-        ]) and not all([
-            has_parent_folder_nscf, 
-            has_parent_folder_ph, 
-            has_parent_folder_chk
-        ]):
+    # if any([
+    #     has_parent_folder_nscf, 
+    #     has_parent_folder_ph, 
+    #     has_parent_folder_chk
+    #     ]) and not all([
+    #         has_parent_folder_nscf, 
+    #         has_parent_folder_ph, 
+    #         has_parent_folder_chk
+    #     ]):
             
-        return "If providing `nscf/ph/chk` parent folders, you must provide all three together."
+    #     return "If providing `nscf/ph/chk` parent folders, you must provide all three together."
 
     # If the logic passes, the validator must return None
     return None
@@ -135,7 +135,7 @@ class EpwBaseWorkChain(ProtocolMixin, BaseRestartWorkChain):
             help='w90_chk_to_ukk_script'
             )
         
-        spec.inputs.validator = validate_inputs
+        # spec.inputs.validator = validate_inputs
         
         spec.outline(
             cls.setup,

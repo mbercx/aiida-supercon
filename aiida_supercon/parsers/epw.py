@@ -13,7 +13,17 @@ class EpwParser(BaseParser):
     """``Parser`` implementation for the ``EpwCalculation`` calculation job."""
 
     success_string='EPW.bib'
-
+    
+    _PREFIX = EpwCalculation._PREFIX
+    _OUTPUT_SUBFOLDER = './out/'
+    _OUTPUT_DOS_FILE = _OUTPUT_SUBFOLDER + _PREFIX + '.dos'
+    _OUTPUT_PHDOS_FILE = _PREFIX + '.phdos'
+    _OUTPUT_PHDOS_PROJ_FILE = _PREFIX + '.phdos_proj'
+    _OUTPUT_A2F_FILE = EpwCalculation._OUTPUT_A2F_FILE
+    _OUTPUT_A2F_PROJ_FILE = _PREFIX + '.a2f_proj'
+    _OUTPUT_LAMBDA_FS_FILE = _PREFIX + '.lambda_FS'
+    _OUTPUT_LAMBDA_K_PAIRS_FILE = _PREFIX + '.lambda_k_pairs'
+    
     def parse(self, **kwargs):
         """Parse the retrieved files of a completed ``EpwCalculation`` into output nodes."""
         logs = get_logging_container()
@@ -35,11 +45,35 @@ class EpwParser(BaseParser):
             phbands_contents = self.retrieved.base.repository.get_object_content(EpwCalculation._output_phbands_file)
             self.out('ph_band_structure', self.parse_bands(phbands_contents))
 
-        if EpwCalculation._OUTPUT_A2F_FILE in self.retrieved.base.repository.list_object_names():
-            a2f_contents = self.retrieved.base.repository.get_object_content(EpwCalculation._OUTPUT_A2F_FILE)
+        if self._OUTPUT_A2F_FILE in self.retrieved.base.repository.list_object_names():
+            a2f_contents = self.retrieved.base.repository.get_object_content(self._OUTPUT_A2F_FILE)
             a2f_xydata, parsed_a2f = self.parse_a2f(a2f_contents)
             self.out('a2f', a2f_xydata)
             parsed_data.update(parsed_a2f)
+
+        if self._OUTPUT_DOS_FILE in self.retrieved.base.repository.list_object_names():
+            dos_contents = self.retrieved.base.repository.get_object_content(self._OUTPUT_DOS_FILE)
+            self.out('dos', self.parse_dos(dos_contents))
+
+        if self._OUTPUT_PHDOS_FILE in self.retrieved.base.repository.list_object_names():
+            phdos_contents = self.retrieved.base.repository.get_object_content(self._OUTPUT_PHDOS_FILE)
+            self.out('phdos', self.parse_phdos(phdos_contents))
+
+        if self._OUTPUT_PHDOS_PROJ_FILE in self.retrieved.base.repository.list_object_names():
+            phdos_proj_contents = self.retrieved.base.repository.get_object_content(self._OUTPUT_PHDOS_PROJ_FILE)
+            self.out('phdos_proj', self.parse_phdos(phdos_proj_contents))
+
+        if self._OUTPUT_A2F_PROJ_FILE in self.retrieved.base.repository.list_object_names():
+            a2f_proj_contents = self.retrieved.base.repository.get_object_content(self._OUTPUT_A2F_PROJ_FILE)
+            self.out('a2f_proj', self.parse_a2f_proj(a2f_proj_contents))
+        
+        if self._OUTPUT_LAMBDA_FS_FILE in self.retrieved.base.repository.list_object_names():
+            lambda_FS_contents = self.retrieved.base.repository.get_object_content(self._OUTPUT_LAMBDA_FS_FILE)
+            self.out('lambda_FS', self.parse_lambda_FS(lambda_FS_contents))
+        
+        if self._OUTPUT_LAMBDA_K_PAIRS_FILE in self.retrieved.base.repository.list_object_names():
+            lambda_k_pairs_contents = self.retrieved.base.repository.get_object_content(self._OUTPUT_LAMBDA_K_PAIRS_FILE)
+            self.out('lambda_k_pairs', self.parse_lambda_k_pairs(lambda_k_pairs_contents))
 
         pattern_aniso = re.compile(r'aiida\.imag_aniso_gap\d+_(\d+)\.(\d+)$')
 
@@ -49,13 +83,19 @@ class EpwParser(BaseParser):
             if (match := pattern_aniso.match(filename))
         ]
 
-        if imag_aniso_filelist is not []:
+        if imag_aniso_filelist != []:
             aniso_gap_functions_arraydata = orm.ArrayData()
+            Ts = []
+            aniso_gap_functions_arrays = []
             for T, imag_aniso_file in imag_aniso_filelist:
                 imag_aniso_file_content = self.retrieved.base.repository.get_object_content(imag_aniso_file)
                 aniso_gap_function = self.parse_aniso_gap_function(imag_aniso_file_content)
-                aniso_gap_functions_arraydata.set_array(T, aniso_gap_function)
+                # aniso_gap_functions_arraydata.set_array(T, aniso_gap_function)
+                Ts.append(T)
+                aniso_gap_functions_arrays.append(aniso_gap_function)
             
+            aniso_gap_functions_arraydata.set_array('temps', numpy.array(Ts))
+            aniso_gap_functions_arraydata.set_array('aniso_gap_functions', numpy.array(aniso_gap_functions_arrays))
             self.out('aniso_gap_functions', aniso_gap_functions_arraydata)
         
         if 'max_eigenvalue' in parsed_data:
@@ -154,6 +194,83 @@ class EpwParser(BaseParser):
         return a2f_xydata, parsed_data
 
     @staticmethod
+    def parse_a2f_proj(content):
+        """Parse the contents of the `.a2f_proj` file."""
+        import io
+        a2f_proj_xydata = orm.XyData()
+        a2f_proj_array = numpy.array([line.split() for line in content.splitlines()[1:-1]], dtype=float)
+
+        a2f_proj_xydata.set_array('frequency', a2f_proj_array[:, 0])
+        a2f_proj_xydata.set_array('a2f_proj', a2f_proj_array[:, 1:])
+        
+        return a2f_proj_xydata
+    
+    @staticmethod
+    def parse_dos(content):
+        """Parse the contents of the `.dos` file."""
+        import io
+        dos_xydata = orm.XyData()
+        dos = numpy.loadtxt(
+            io.StringIO((content)), 
+            dtype=float, 
+            comments='#'
+            )
+        
+        dos_xydata.set_array('Energy', dos[:, 0])
+        dos_xydata.set_array('EDOS', dos[:, 1])
+        
+        return dos_xydata
+
+    @staticmethod
+    def parse_phdos(content):
+        """Parse the contents of the `.phdos` file."""
+        import io
+        phdos_xydata = orm.XyData()
+        phdos = numpy.loadtxt(
+            io.StringIO((content)), 
+            dtype=float, 
+            skiprows=1
+            )
+        phdos_xydata.set_array('Frequency', phdos[:, 0])
+        phdos_xydata.set_array('PHDOS', phdos[:, 1])
+        
+        return phdos_xydata
+
+    @staticmethod
+    def parse_lambda_FS(content):
+        """Parse the contents of the `.lambda_FS` file."""
+        import io
+        
+        lambda_FS_arraydata = orm.ArrayData()
+        lambda_FS = numpy.loadtxt(
+            io.StringIO((content)), 
+            dtype=float, 
+            comments='#'
+            )
+        
+        lambda_FS_arraydata.set_array('kpoints', lambda_FS[:, :3])
+        lambda_FS_arraydata.set_array('band', lambda_FS[:, 3])
+        lambda_FS_arraydata.set_array('Enk', lambda_FS[:, 4])
+        lambda_FS_arraydata.set_array('lambda', lambda_FS[:, 5])
+        
+        return lambda_FS_arraydata
+    
+    @staticmethod
+    def parse_lambda_k_pairs(content):
+        """Parse the contents of the `.lambda_k_pairs` file."""
+        import io
+        
+        lambda_k_pairs_xydata = orm.XyData()
+        lambda_k_pairs = numpy.loadtxt(
+            io.StringIO((content)), 
+            dtype=float, 
+            comments='#'
+            )
+        lambda_k_pairs_xydata.set_array('lambda_nk', lambda_k_pairs[:, 0])
+        lambda_k_pairs_xydata.set_array('rho', lambda_k_pairs[:, 1])
+        
+        return lambda_k_pairs_xydata
+
     def parse_bands(content):
         """Parse the contents of a band structure file."""
         nbnd, nks = (

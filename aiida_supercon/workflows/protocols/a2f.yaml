@@ -20,7 +20,7 @@ default_inputs:
           eps_acustic: 0.1
           iverbosity: 1
           fsthick: 0.8
-          restart: True
+          # restart: True
           temps: 1
 
 default_protocol: moderate

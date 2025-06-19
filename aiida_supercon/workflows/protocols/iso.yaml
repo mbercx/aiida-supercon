@@ -33,9 +33,9 @@ default_inputs:
           wscut: 0.5
           broyden_beta: 0.4
           conv_thr_iaxis: 0.001
-          nstemp: 40
-          temps: '1 40'
-          restart: True
+          nstemp: 15
+          # temps: '1 40'
+          # restart: True
 default_protocol: moderate
 protocols:
   moderate:

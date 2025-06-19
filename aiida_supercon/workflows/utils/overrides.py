@@ -74,7 +74,7 @@ def recursive_merge(namespace, dict_to_merge):
 
     return namespace
 
-def find_parent_folder_chk_from_workchain(
+def get_parent_folder_chk_from_w90_workchain(
     workchain: orm.WorkChainNode,
     ) -> orm.RemoteData:
     

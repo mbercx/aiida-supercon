@@ -11,8 +11,8 @@ from .intp import EpwBaseIntpWorkChain
 from scipy.interpolate import interp1d
 import numpy
 from ..common.restart import RestartType
-
-
+import warnings
+from ..common.restart import RestartState
 @calcfunction
 def calculate_tc(max_eigenvalue: orm.XyData) -> orm.Float:
     me_array = max_eigenvalue.get_array('max_eigenvalue')
@@ -42,7 +42,9 @@ class EpwA2fWorkChain(EpwBaseIntpWorkChain):
     """Work chain to compute the Allen-Dynes critical temperature."""
     
     _INTP_NAMESPACE = 'a2f'
-    _RESTART_INTP = RestartType.RESTART_A2F
+    _ALL_NAMESPACES = [EpwBaseIntpWorkChain._B2W_NAMESPACE, _INTP_NAMESPACE]
+    _RESTART_STATE = RestartState(_ALL_NAMESPACES)
+    
     _blocked_keywords = [
         ('INPUTEPW', 'use_ws'),
         ('INPUTEPW', 'nbndsub'),
@@ -50,16 +52,19 @@ class EpwA2fWorkChain(EpwBaseIntpWorkChain):
         ('INPUTEPW', 'vme'),
     ]
     
-    
+    @classmethod
+    def validate_inputs(cls, inputs, ctx=None):
+        """Validate the inputs."""
+        return None
+        
+        
     @classmethod
     def define(cls, spec):
         """Define the work chain specification."""
         super().define(spec)
 
-
         spec.outline(
             cls.setup,
-            cls.validate_parent_folders,
             if_(cls.should_run_b2w)(
                 cls.run_b2w,
                 cls.inspect_b2w,
@@ -69,11 +74,19 @@ class EpwA2fWorkChain(EpwBaseIntpWorkChain):
             cls.inspect_process,
             cls.results
         )
-        spec.output('a2f', valid_type=orm.XyData,
-                    help='The contents of the `.a2f` file.')
+        
+        spec.inputs[cls._INTP_NAMESPACE].validator = cls.validate_inputs
+        spec.inputs.validator = cls.validate_inputs
+        
+        # spec.output('a2f', valid_type=orm.XyData,
+        #             help='The contents of the `.a2f` file.')
         # spec.output('Tc_allen_dynes', valid_type=orm.Float,
         #             help='The Allen-Dynes Tc interpolated from the a2f file.')
 
+        spec.exit_code(
+            402, 'ERROR_SUB_PROCESS_A2F',
+            message='The `epw.x` workflow failed.'
+            )
     @classmethod
     def get_protocol_filepath(cls):
         """Return ``pathlib.Path`` to the ``.yaml`` file that defines the protocols."""
@@ -81,14 +94,114 @@ class EpwA2fWorkChain(EpwBaseIntpWorkChain):
         from . import protocols
         return files(protocols) / f'{cls._INTP_NAMESPACE}.yaml'
 
+    @classmethod
+    def get_builder_restart(
+        cls, 
+        from_a2f_workchain
+        ):
+        
+        return super()._get_builder_restart(
+            from_intp_workchain=from_a2f_workchain,
+            )
+        
+    # @classmethod
+    # def get_builder_restart(
+    #     cls, 
+    #     from_a2f_workchain=None,
+    #     **kwargs
+    #     ):
+    #     """Return a builder prepopulated with inputs selected according to the chosen protocol."""
+    #     builder = cls.get_builder()
+    #     parent_builder = from_a2f_workchain.get_builder_restart()
+        
+    #     b2w = from_a2f_workchain.base.links.get_outgoing(
+    #         link_label_filter=cls._B2W_NAMESPACE
+    #         ).first()
+        
+    #     if cls._B2W_NAMESPACE not in from_a2f_workchain.inputs or b2w.node.is_finished_ok:
+    #         builder.pop(cls._B2W_NAMESPACE)
+    #     else:
+    #         b2w_builder = EpwB2WWorkChain.get_builder_restart(
+    #             from_b2w_workchain=b2w.node
+    #             )
+    #         builder[cls._B2W_NAMESPACE]._data = b2w_builder._data
+        
+    #     a2f = from_a2f_workchain.base.links.get_outgoing(
+    #         link_label_filter=cls._INTP_NAMESPACE
+    #         ).first()
 
+        
+    #     if a2f and a2f.node.is_finished_ok:
+    #         warnings.warn(
+    #             f"The A2F workchain <{from_a2f_workchain.pk}> is already finished.",
+    #             stacklevel=2
+    #             )
+    #         return
+    #     else:
+    #         builder[cls._INTP_NAMESPACE]._data = parent_builder[cls._INTP_NAMESPACE]._data
+        
+    #     return builder
+    
+    # @classmethod
+    # def get_builder_from_b2w(
+    #     cls,
+    #     from_b2w_workchain: orm.WorkChainNode,
+    #     protocol=None,
+    #     overrides=None,
+    #     **kwargs
+    #     ):
+    #     """Return a builder prepopulated with inputs selected according to the chosen protocol."""
+        
+    #     inputs = cls.get_protocol_inputs(protocol, overrides)
+        
+    #     builder = cls.get_builder()
+
+
+    #     if not from_b2w_workchain or not from_b2w_workchain.process_class == EpwB2WWorkChain:
+    #         raise ValueError('Currently we only accept `EpwB2WWorkChain`')
+        
+    #     structure = from_b2w_workchain.inputs.structure
+    #     code = from_b2w_workchain.inputs[EpwB2WWorkChain._EPW_NAMESPACE]['epw'].code
+        
+    #     builder.structure = structure
+        
+    #     if from_b2w_workchain.is_finished_ok:
+    #         builder.pop(cls._B2W_NAMESPACE)
+    #     else:
+    #         b2w_builder = EpwB2WWorkChain.get_builder_restart(
+    #             from_b2w_workchain=from_b2w_workchain,
+    #             protocol=protocol,
+    #             overrides=overrides.get(cls._B2W_NAMESPACE, None),
+    #             **kwargs
+    #             )
+            
+    #         # Actually there is no exclusion of EpwB2WWorkChain namespace
+    #         # So we need to set the _data manually
+    #         builder[cls._B2W_NAMESPACE]._data = b2w_builder._data
+            
+    #     intp_builder = EpwBaseWorkChain.get_builder_from_protocol(
+    #         code=code,
+    #         structure=structure,
+    #         protocol=protocol,
+    #         overrides=inputs.get(cls._INTP_NAMESPACE, None),
+    #         **kwargs
+    #         )
+        
+    #     intp_builder.parent_folder_epw = from_b2w_workchain.outputs.epw.remote_folder
+        
+    #     builder[cls._INTP_NAMESPACE]._data = intp_builder._data
+        
+    #     builder.clean_workdir = orm.Bool(inputs['clean_workdir'])
+        
+    #     return builder
+        
+        
     @classmethod
     def get_builder_from_protocol(
             cls, 
             codes, 
             structure, 
             protocol=None, 
-            from_workchain=None,
             overrides=None, 
             **kwargs
         ):
@@ -97,12 +210,9 @@ class EpwA2fWorkChain(EpwBaseIntpWorkChain):
             codes, 
             structure, 
             protocol, 
-            from_workchain, 
             overrides,
-            restart_intp=cls._RESTART_INTP,
             **kwargs
             )
-
 
         return builder
 
@@ -114,33 +224,30 @@ class EpwA2fWorkChain(EpwBaseIntpWorkChain):
             settings = self.ctx.inputs.epw.settings.get_dict()
         except AttributeError:
             settings = {}
-
-        settings['ADDITIONAL_RETRIEVE_LIST'] = ['aiida.a2f']
+        
+        settings['ADDITIONAL_RETRIEVE_LIST'] = [
+            'aiida.a2f',
+            'aiida.a2f_proj',
+            'out/aiida.dos',
+            'aiida.phdos',
+            'aiida.phdos_proj',
+            'aiida.lambda_FS',
+            'aiida.lambda_k_pairs'
+            ]
         
         self.ctx.inputs.epw.settings = orm.Dict(settings)
         
     def inspect_process(self):
         """Verify that the epw.x workflow finished successfully."""
-        intp = self.ctx.intp
+        intp_workchain = self.ctx.workchain_intp
 
-        if not intp.is_finished_ok:
-            self.report(f'`epw.x` failed with exit status {intp.exit_status}')
-            return self.exit_codes.ERROR_SUB_PROCESS_EPW_A2F
-
+        if not intp_workchain.is_finished_ok:
+            self.report(f'`epw.x` failed with exit status {intp_workchain.exit_status}')
+            return self.exit_codes.ERROR_SUB_PROCESS_A2F
 
     def results(self):
         """TODO"""
 
         super().results()
         
-        self.out('a2f', self.ctx.intp.outputs.a2f)
-
-    def on_terminated(self):
-        """Clean up the work chain."""
-        super().on_terminated()
-        if self.inputs.clean_workdir.value:
-            self.report('cleaning remote folders')
-            if hasattr(self.ctx, 'b2w'):
-                self.ctx.b2w.outputs.remote_folder._clean()
-            if hasattr(self.ctx, 'a2f'):
-                self.ctx.a2f.outputs.remote_folder._clean()
+        # self.out('a2f', self.ctx.workchain_intp.outputs.a2f)

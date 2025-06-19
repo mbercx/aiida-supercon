@@ -26,7 +26,7 @@ default_inputs:
         options:
           withmpi: True
 
-  b2w:
+  epw:
     epw:
       metadata:
         options:
